@@ -4,6 +4,7 @@ Spyder Editor
 
 This is a temporary script file.
 """
+import os
 import fastapi
 import uvicorn
 
@@ -20,7 +21,7 @@ import bcrypt, requests, random
 # =========================
 ALLOW_SHARED_KEYS = True  # ⚠️ modalità LAB: permette usare token di altri utenti
 
-DATABASE_URL = "sqlite:///./ai_webapp.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ai_webapp.db")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
