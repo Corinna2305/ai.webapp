@@ -14,14 +14,15 @@ except ImportError:
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, func
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from datetime import datetime
+from datetime import datetime, timedelta
 import bcrypt
 import requests
 import random
 import re
 import logging
+from html import escape
 
 # Carica variabili d'ambiente
 load_dotenv()
@@ -37,6 +38,8 @@ ALLOW_SHARED_KEYS = os.getenv("ALLOW_SHARED_KEYS", "True").lower() == "true"
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ai_webapp.db")
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOCK_MINUTES = 15
 
 # SQLite requires check_same_thread=False; Postgres must not receive that option.
 if DATABASE_URL.startswith("sqlite"):
@@ -70,6 +73,14 @@ class Image(Base):
     url = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class LoginGuard(Base):
+    __tablename__ = "login_guards"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True, index=True)
+    failed_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime, nullable=True)
+
 Base.metadata.create_all(bind=engine)
 
 # =========================
@@ -91,6 +102,18 @@ def is_valid_email(email: str) -> bool:
     """Valida il formato email"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def validate_password_strength(password: str) -> bool:
+    # Strong baseline: 8+ chars with upper/lower/digit/special.
+    if len(password) < 8:
+        return False
+    checks = [r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]"]
+    return all(re.search(pattern, password) for pattern in checks)
 
 def hash_password(p: str) -> str:
     """Hash password con bcrypt"""
@@ -369,36 +392,62 @@ def login(email: str = Form(...), password: str = Form(...)):
         if not is_valid_email(email):
             return "<h2>❌ Email non valida</h2><a href='/'>Riprova</a>"
         
-        if len(password) < 4:
-            return "<h2>❌ Password troppo corta (min 4 caratteri)</h2><a href='/'>Riprova</a>"
+        email_norm = normalize_email(email)
         
         db = SessionLocal()
         
         try:
-            user = db.query(User).filter(User.email == email).first()
+            now = datetime.utcnow()
+
+            guard = db.query(LoginGuard).filter(LoginGuard.email == email_norm).first()
+            if not guard:
+                guard = LoginGuard(email=email_norm, failed_attempts=0, locked_until=None)
+                db.add(guard)
+                db.commit()
+                db.refresh(guard)
+
+            if guard.locked_until and guard.locked_until > now:
+                remaining = int((guard.locked_until - now).total_seconds() // 60) + 1
+                return f"<h2>⛔ Account bloccato temporaneamente</h2><p>Riprova tra {remaining} minuti.</p><a href='/'>Torna</a>"
+
+            user = db.query(User).filter(func.lower(User.email) == email_norm).first()
 
             if not user:
+                if not validate_password_strength(password):
+                    return "<h2>❌ Password debole</h2><p>Usa almeno 8 caratteri con maiuscola, minuscola, numero e simbolo.</p><a href='/'>Riprova</a>"
+
                 # Nuovo utente: registrazione
                 user = User(
-                    email=email,
+                    email=email_norm,
                     password=hash_password(password),
                     credits=10,
                     last_login=datetime.utcnow()
                 )
                 db.add(user)
-                logger.info(f"New user registered: {email}")
+                guard.failed_attempts = 0
+                guard.locked_until = None
+                logger.info(f"New user registered: {email_norm}")
             else:
                 # Utente esistente: verifica password
                 if not check_password(password, user.password):
-                    logger.warning(f"Failed login attempt: {email}")
+                    guard.failed_attempts += 1
+                    if guard.failed_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+                        guard.failed_attempts = 0
+                        guard.locked_until = now + timedelta(minutes=LOCK_MINUTES)
+                        db.commit()
+                        return f"<h2>⛔ Troppi tentativi falliti</h2><p>Account bloccato per {LOCK_MINUTES} minuti.</p><a href='/'>Torna</a>"
+                    db.commit()
+                    logger.warning(f"Failed login attempt: {email_norm}")
                     return "<h2>❌ Password errata</h2><a href='/'>Torna</a>"
                 
                 # Aggiorna last_login
                 user.last_login = datetime.utcnow()
-                logger.info(f"User login: {email}")
+                guard.failed_attempts = 0
+                guard.locked_until = None
+                logger.info(f"User login: {email_norm}")
             
             db.commit()
-            return f"<h2>✅ Login OK</h2><a href='/dashboard?email={email}'>Vai al dashboard</a>"
+            return f"<h2>✅ Login OK</h2><a href='/dashboard?email={email_norm}'>Vai al dashboard</a>"
         
         finally:
             db.close()
@@ -414,23 +463,26 @@ def dashboard(email: str):
         if not is_valid_email(email):
             return "<h2>❌ Email non valida</h2><a href='/'>Torna</a>"
         
+        email_norm = normalize_email(email)
+        email_safe = escape(email_norm)
+
         db = SessionLocal()
         
         try:
-            user = db.query(User).filter(User.email == email).first()
+            user = db.query(User).filter(func.lower(User.email) == email_norm).first()
             if not user:
                 return "<h2>❌ Utente non trovato</h2><a href='/'>Torna</a>"
 
-            imgs = db.query(Image).filter(Image.email == email).all()
+            imgs = db.query(Image).filter(func.lower(Image.email) == email_norm).all()
             images_html = "".join([f"<img src='{i.url}' width='128' alt='Generated'>" for i in imgs])
 
             return f"""
-            <h2>Dashboard - {email}</h2>
+            <h2>Dashboard - {email_safe}</h2>
             <p><strong>Crediti disponibili:</strong> {user.credits}</p>
             
             <h3>🔑 Chiavi API (opzionale)</h3>
             <form action="/save_keys" method="post">
-                <input type="hidden" name="email" value="{email}">
+                <input type="hidden" name="email" value="{email_safe}">
                 <label>OpenAI key: <input name="openai_key" type="password" placeholder="sk-..."></label><br>
                 <label>Stability key: <input name="stability_key" type="password" placeholder="sk-..."></label><br>
                 <label>Nano Banana key: <input name="nano_key" type="password" placeholder="key-..."></label><br>
@@ -438,9 +490,18 @@ def dashboard(email: str):
                 <button type="submit">Salva API key</button>
             </form>
 
+            <h3>🔐 Aggiorna Password</h3>
+            <form action="/change-password" method="post">
+                <input type="hidden" name="email" value="{email_safe}">
+                <label>Password attuale: <input name="current_password" type="password" required></label><br>
+                <label>Nuova password: <input name="new_password" type="password" required></label><br>
+                <label>Conferma nuova password: <input name="confirm_password" type="password" required></label><br>
+                <button type="submit">Aggiorna password</button>
+            </form>
+
             <h3>🎨 Genera immagine</h3>
             <form action="/generate" method="post">
-                <input type="hidden" name="email" value="{email}">
+                <input type="hidden" name="email" value="{email_safe}">
                 <label>Prompt: <input name="prompt" required maxlength="500" placeholder="Descrivi l'immagine..."></label><br>
                 <label>Provider:
                     <select name="provider">
@@ -479,10 +540,12 @@ def save_keys(
         if not is_valid_email(email):
             return "<h2>❌ Email non valida</h2><a href='/'>Torna</a>"
         
+        email_norm = normalize_email(email)
+
         db = SessionLocal()
         
         try:
-            user = db.query(User).filter(User.email == email).first()
+            user = db.query(User).filter(func.lower(User.email) == email_norm).first()
             if not user:
                 return "<h2>❌ Utente non trovato</h2><a href='/'>Torna</a>"
             
@@ -493,16 +556,61 @@ def save_keys(
             user.shared = 1 if shared else 0
             
             db.commit()
-            logger.info(f"API keys updated for user: {email}")
+            logger.info(f"API keys updated for user: {email_norm}")
             
-            return f"<h2>✅ API key salvate</h2><a href='/dashboard?email={email}'>Torna al dashboard</a>"
+            return f"<h2>✅ API key salvate</h2><a href='/dashboard?email={email_norm}'>Torna al dashboard</a>"
         
         finally:
             db.close()
     
     except Exception as e:
         logger.error(f"Save keys error: {e}")
-        return f"<h2>❌ Errore: {str(e)}</h2><a href='/dashboard?email={email}'>Torna</a>"
+        return f"<h2>❌ Errore: {str(e)}</h2><a href='/dashboard?email={normalize_email(email)}'>Torna</a>"
+
+
+@app.post("/change-password", response_class=HTMLResponse)
+def change_password(
+    email: str = Form(...),
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    try:
+        if not is_valid_email(email):
+            return "<h2>❌ Email non valida</h2><a href='/'>Torna</a>"
+
+        email_norm = normalize_email(email)
+
+        if new_password != confirm_password:
+            return f"<h2>❌ Le nuove password non coincidono</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
+
+        if not validate_password_strength(new_password):
+            return f"<h2>❌ Password debole</h2><p>Usa almeno 8 caratteri con maiuscola, minuscola, numero e simbolo.</p><a href='/dashboard?email={email_norm}'>Torna</a>"
+
+        db = SessionLocal()
+
+        try:
+            user = db.query(User).filter(func.lower(User.email) == email_norm).first()
+            if not user:
+                return "<h2>❌ Utente non trovato</h2><a href='/'>Torna</a>"
+
+            if not check_password(current_password, user.password):
+                return f"<h2>❌ Password attuale non valida</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
+
+            if check_password(new_password, user.password):
+                return f"<h2>❌ La nuova password deve essere diversa dalla precedente</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
+
+            user.password = hash_password(new_password)
+            db.commit()
+            logger.info(f"Password updated for user: {email_norm}")
+            return f"<h2>✅ Password aggiornata con successo</h2><a href='/dashboard?email={email_norm}'>Torna al dashboard</a>"
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"Change password error: {e}")
+        return f"<h2>❌ Errore: {str(e)}</h2><a href='/'>Torna</a>"
 
 @app.post("/generate", response_class=HTMLResponse)
 def generate(prompt: str = Form(...), provider: str = Form(...), email: str = Form(...)):
@@ -512,32 +620,34 @@ def generate(prompt: str = Form(...), provider: str = Form(...), email: str = Fo
         if not is_valid_email(email):
             return "<h2>❌ Email non valida</h2><a href='/'>Torna</a>"
         
+        email_norm = normalize_email(email)
+
         if not prompt or len(prompt.strip()) == 0:
-            return "<h2>❌ Prompt vuoto</h2><a href='/dashboard?email={email}'>Torna</a>"
+            return f"<h2>❌ Prompt vuoto</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
         
         if len(prompt) > 500:
-            return "<h2>❌ Prompt troppo lungo (max 500 caratteri)</h2><a href='/dashboard?email={email}'>Torna</a>"
+            return f"<h2>❌ Prompt troppo lungo (max 500 caratteri)</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
         
         provider = provider.lower()
         if provider not in ["openai", "stability", "nano"]:
-            return "<h2>❌ Provider non valido</h2><a href='/dashboard?email={email}'>Torna</a>"
+            return f"<h2>❌ Provider non valido</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
         
         db = SessionLocal()
         
         try:
-            user = db.query(User).filter(User.email == email).first()
+            user = db.query(User).filter(func.lower(User.email) == email_norm).first()
             if not user:
                 return "<h2>❌ Utente non trovato</h2><a href='/'>Torna</a>"
 
             # Controlla crediti
             if user.credits <= 0:
-                return f"<h2>❌ Crediti finiti</h2><p>Contattic l'admin</p><a href='/dashboard?email={email}'>Torna</a>"
+                return f"<h2>❌ Crediti finiti</h2><p>Contattic l'admin</p><a href='/dashboard?email={email_norm}'>Torna</a>"
 
             # Recupera chiave API
             api_key = getattr(user, f"{provider}_key", None) or get_shared_key(db, provider)
 
             if not api_key:
-                return f"<h2>⚠️ Nessuna API key disponibile per {provider}</h2><a href='/dashboard?email={email}'>Torna</a>"
+                return f"<h2>⚠️ Nessuna API key disponibile per {provider}</h2><a href='/dashboard?email={email_norm}'>Torna</a>"
 
             # Decrementa crediti
             user.credits -= 1
@@ -548,7 +658,7 @@ def generate(prompt: str = Form(...), provider: str = Form(...), email: str = Fo
 
             # Salva record nel database
             img = Image(
-                email=email,
+                email=email_norm,
                 prompt=prompt,
                 provider=provider,
                 url=url,
@@ -557,13 +667,13 @@ def generate(prompt: str = Form(...), provider: str = Form(...), email: str = Fo
             db.add(img)
             db.commit()
             
-            logger.info(f"Image generated for user: {email}, provider: {provider}")
+            logger.info(f"Image generated for user: {email_norm}, provider: {provider}")
             
             return f"""
             <h2>✅ Immagine generata!</h2>
             <img src="{url}" width="256" alt="Generated image"><br>
             <p><strong>Crediti rimasti:</strong> {user.credits}</p>
-            <a href="/dashboard?email={email}">Torna al dashboard</a>
+            <a href="/dashboard?email={email_norm}">Torna al dashboard</a>
             """
         
         finally:
@@ -571,7 +681,7 @@ def generate(prompt: str = Form(...), provider: str = Form(...), email: str = Fo
     
     except Exception as e:
         logger.error(f"Generate error: {e}")
-        return f"<h2>❌ Errore nella generazione: {str(e)}</h2><a href='/dashboard?email={email}'>Torna</a>"
+        return f"<h2>❌ Errore nella generazione: {str(e)}</h2><a href='/dashboard?email={normalize_email(email)}'>Torna</a>"
 
 # =========================
 # AVVIO SERVER
