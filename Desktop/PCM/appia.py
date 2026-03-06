@@ -141,12 +141,224 @@ def generate_image_placeholder(prompt: str, provider: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
-    <h1>AI Multi-Modello PRO</h1>
-    <form action="/login" method="post">
-        Email: <input type="email" name="email" required><br>
-        Password: <input type="password" name="password" required><br>
-        <button>Login / Register</button>
-    </form>
+    <!DOCTYPE html>
+    <html lang="it">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>AI Multi-Modello PRO</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+        <style>
+            :root {
+                --bg: #f4efe6;
+                --ink: #14213d;
+                --ink-soft: #405675;
+                --card: #fffdf9;
+                --accent: #ff7a18;
+                --accent-2: #fcb045;
+                --line: #e6dacc;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                margin: 0;
+                min-height: 100vh;
+                font-family: "Space Grotesk", sans-serif;
+                color: var(--ink);
+                background:
+                    radial-gradient(circle at 10% 15%, #ffd9b3 0%, transparent 25%),
+                    radial-gradient(circle at 90% 85%, #ffe8cc 0%, transparent 30%),
+                    var(--bg);
+                display: grid;
+                place-items: center;
+                padding: 24px;
+            }
+
+            .shell {
+                width: 100%;
+                max-width: 980px;
+                display: grid;
+                gap: 18px;
+                grid-template-columns: 1.1fr 0.9fr;
+            }
+
+            .hero,
+            .panel {
+                background: var(--card);
+                border: 1px solid var(--line);
+                border-radius: 20px;
+                box-shadow: 0 12px 40px rgba(20, 33, 61, 0.08);
+            }
+
+            .hero {
+                padding: 28px;
+                position: relative;
+                overflow: hidden;
+            }
+
+            .hero::after {
+                content: "";
+                position: absolute;
+                width: 180px;
+                height: 180px;
+                right: -40px;
+                top: -40px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, var(--accent), var(--accent-2));
+                opacity: 0.25;
+            }
+
+            .badge {
+                display: inline-block;
+                background: #fff3e4;
+                color: #a14b00;
+                border: 1px solid #ffd4ab;
+                border-radius: 999px;
+                font-size: 12px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                padding: 6px 10px;
+                margin-bottom: 14px;
+            }
+
+            h1 {
+                margin: 0;
+                font-size: clamp(30px, 5vw, 48px);
+                line-height: 1.04;
+                max-width: 12ch;
+            }
+
+            .subtitle {
+                margin: 14px 0 22px;
+                color: var(--ink-soft);
+                max-width: 46ch;
+                line-height: 1.5;
+                font-size: 15px;
+            }
+
+            .chips {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .chip {
+                font-size: 12px;
+                border: 1px solid var(--line);
+                border-radius: 999px;
+                padding: 6px 10px;
+                background: #fff;
+            }
+
+            .panel {
+                padding: 24px;
+            }
+
+            .panel h2 {
+                margin: 0 0 14px;
+                font-size: 24px;
+            }
+
+            .field {
+                display: grid;
+                gap: 6px;
+                margin-bottom: 14px;
+            }
+
+            label {
+                font-size: 13px;
+                color: var(--ink-soft);
+            }
+
+            input {
+                width: 100%;
+                border: 1px solid #d9c8b5;
+                border-radius: 12px;
+                padding: 12px;
+                font: inherit;
+                background: #fff;
+            }
+
+            input:focus {
+                outline: none;
+                border-color: #f29b4b;
+                box-shadow: 0 0 0 4px rgba(242, 155, 75, 0.15);
+            }
+
+            .btn {
+                width: 100%;
+                border: none;
+                border-radius: 12px;
+                background: linear-gradient(120deg, var(--accent), var(--accent-2));
+                color: #fff;
+                padding: 12px 14px;
+                font: inherit;
+                font-weight: 700;
+                cursor: pointer;
+                transition: transform 0.15s ease;
+            }
+
+            .btn:hover {
+                transform: translateY(-1px);
+            }
+
+            .hint {
+                margin: 12px 0 0;
+                font-size: 12px;
+                color: var(--ink-soft);
+            }
+
+            @media (max-width: 860px) {
+                .shell {
+                    grid-template-columns: 1fr;
+                }
+
+                .hero,
+                .panel {
+                    border-radius: 16px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="shell">
+            <section class="hero">
+                <span class="badge">AI image studio</span>
+                <h1>AI Multi-Modello PRO</h1>
+                <p class="subtitle">
+                    Crea immagini con provider diversi da un'unica dashboard.
+                    Login veloce, crediti disponibili e gestione chiavi API in un solo posto.
+                </p>
+                <div class="chips">
+                    <span class="chip">OpenAI DALL-E</span>
+                    <span class="chip">Stability AI</span>
+                    <span class="chip">Nano Banana</span>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Entra o registrati</h2>
+                <form action="/login" method="post">
+                    <div class="field">
+                        <label for="email">Email</label>
+                        <input id="email" type="email" name="email" required placeholder="nome@email.com">
+                    </div>
+                    <div class="field">
+                        <label for="password">Password</label>
+                        <input id="password" type="password" name="password" required placeholder="Minimo 4 caratteri">
+                    </div>
+                    <button class="btn" type="submit">Login / Register</button>
+                </form>
+                <p class="hint">Usa password demo quando fai test pubblici.</p>
+            </section>
+        </main>
+    </body>
+    </html>
     """
 
 @app.post("/login", response_class=HTMLResponse)
