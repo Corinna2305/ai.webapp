@@ -4,7 +4,12 @@ AI Multi-Modello Web App
 Web application per generare immagini con diverse API AI
 """
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Fallback: app can still run using Render environment variables.
+    def load_dotenv():
+        return False
 
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
